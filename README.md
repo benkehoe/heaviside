@@ -1,7 +1,7 @@
 heaviside: fast and loose state machines with Step Function syntax
 ===
 
-[AWS Step Functions](https://aws.amazon.com/step-functions/) is a great service, but [it doesn't quite fit all the use cases it could](https://serverless.zone/faas-is-stateless-and-aws-step-functions-provides-state-as-a-service-2499d4a6e412). In particular, it's tuned towards being durable and auditable, at the expense of speed and invocation rate. Heaviside is an experiment to combine the [States language](https://states-language.net/spec.html) that Step Functions uses to define state machines with AWS Lambda's client context functionality to make these fast and loose orchestrations possible.
+[AWS Step Functions](https://aws.amazon.com/step-functions/) is a great service, but [it doesn't quite fit all the use cases it could](https://serverless.zone/faas-is-stateless-and-aws-step-functions-provides-state-as-a-service-2499d4a6e412). In particular, it's tuned towards being durable and auditable, at the expense of latency, invocation rate, and cost. Heaviside is an experiment to combine the [States language](https://states-language.net/spec.html) that Step Functions uses to define state machines with AWS Lambda's client context functionality to make these fast and loose orchestrations possible.
 
 Design
 ---
@@ -19,6 +19,6 @@ Implementation
 
 **Definition**: the definition for an execution gets stored in an S3 bucket under that execution's id. In theory it could be passed around, but the client context is limited to about 3KB. Instead, heaviside keeps a cache of the definitions in the Lambda container, so repeated invocations of the same flow don't have to hit S3.
 
-**Retries**: Currently relying on Lambda's retry logic, which is not configurable
+**Retries**: Currently relying on Lambda's retry logic, which is not configurable.
 
-**Need for a DynamoDB table**: there is a definite need for a DynamoDB table to coordinate parallel executions. The output of each substate in a parallel state needs to be collected and once they're all done, collated and dispatched to the next Task Lambda. I'd like to stay away from needing to store the current state of the state machine in the table, but some per-state information may be required for things like timeouts.
+**Need for a DynamoDB table**: Ideally there isn't a central coordination point in linear flows. Through the client context, we are sort of transferring that storage burden to Lambda. However, there is a definite need for a DynamoDB table to coordinate parallel executions. The output of each substate in a parallel state needs to be collected and once they're all done, collated and dispatched to the next Task Lambda. I'd like to stay away from needing to store the current state of the state machine in the table, but some per-state information may be required for things like timeouts.
