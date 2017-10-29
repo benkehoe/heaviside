@@ -1,192 +1,182 @@
 '''
-Created on Oct 28, 2017
+Created on Oct 29, 2017
 
 @author: bkehoe
 '''
 
 from __future__ import absolute_import
 
-import json
-import base64
 import uuid
-import hashlib
+import itertools
+import json
 
-import boto3
+from . import components, states
 
-from . import states
+def is_heaviside_execution(context):
+    return Executor.CONTEXT_EXECUTION_ID_KEY in context
 
-_DEFINITION_CACHE = {}
-
-def _get_definition(definition_hash):
-    global _DEFINITION_CACHE
-    return _DEFINITION_CACHE.get(definition_hash)
-
-def _cache_definition(definition_hash, definition):
-    global _DEFINITION_CACHE
-    _DEFINITION_CACHE[definition_hash] = definition
-
-def is_heaviside_execution(event, context):
-    """Check if this Lambda invocation is associated with a state machine"""
-    return StateMachine._ID_KEY in (context.client_context or {})
-
-class StateMachine(object):
-    """Class to manage state machine execution."""
+class Executor(object):
     @classmethod
-    def _state_machine_key(cls, id):
-        return 'state_machines/{}'.format(id)
-    
-    @classmethod
-    def create(cls, definition, state_machine_bucket_name, state_table_name, boto3_session=None, local=False):
-        """Instantiate a new execution of the given state machine definition.
-        Does not begin execution, that starts with the first dispatch() call.
-        If not local, writes definition to S3""" 
-        id = uuid.uuid4().hex
+    def create(cls, definition,
+               definition_store,
+               execution_store,
+               logger_factory,
+               task_dispatcher):
+        execution_id = uuid.uuid4().hex
         
-        definition = states.StateMachine.from_json(definition)
-        definition_str = json.dumps(definition.to_json())
-        definition_hash = hashlib.sha256().update(definition_str).hexdigest()
+        if not isinstance(definition, states.StateMachine):
+            definition = states.StateMachine.from_json(definition)
         
-        if not local:
-            boto3_session = boto3_session or boto3.Session()
-            
-            state_machine_bucket = boto3_session.resource('s3').Bucket(state_machine_bucket_name)
-            
-            response = state_machine_bucket.Object(cls._state_machine_key(id)).put(
-                Metadata={cls._DEFINITION_HASH_KEY: definition_hash})
-        else:
-            _cache_definition(definition_hash, definition)
+        execution = execution_store.execution_factory(execution_id, definition_store)
+        execution.initialize(definition)
         
-        return cls(id, definition, definition_hash, None, boto3_session, state_machine_bucket_name, state_table_name)
+        return cls(
+            execution_id,
+            execution,
+            definition_store,
+            execution_store,
+            logger_factory,
+            task_dispatcher)
     
     @classmethod
-    def _hydrate(cls, id, definition_hash, current_state, state_machine_bucket_name, state_table_name, boto3_session):
-        definition = _get_definition(definition_hash) #try to find the definition in the cache, so we don't have to hit S3 
-        if not definition:
-            boto3_session = boto3_session or boto3.Session()
-            state_machine_bucket = boto3_session.resource('s3').Bucket(state_machine_bucket_name)
-            response = state_machine_bucket.Object(cls._state_machine_key(id)).get()
-            definition = states.StateMachine.from_json(json.load(response['Body']))
-            definition_hash = response['Metadata'][cls._DEFINITION_HASH_KEY]
-            _cache_definition(definition_hash, definition)
+    def hydrate(cls, context,
+               definition_store,
+               execution_store,
+               logger_factory,
+               task_dispatcher):
         
-        cls(id, definition, definition_hash, current_state, boto3_session, state_machine_bucket_name, state_table_name)
+        execution_id = context[cls.CONTEXT_EXECUTION_ID_KEY]
+        
+        execution = execution_store.execution_factory(execution_id, definition_store)
+        execution.hydrate(context)
+        
+        return cls(
+            execution_id,
+            execution,
+            definition_store,
+            execution_store,
+            logger_factory,
+            task_dispatcher)
     
-    _ID_KEY = 'x-heaviside-sm-id'
-    _DEFINITION_HASH_KEY = 'x-heaviside-sm-def-hash'
-    _STATE_MACHINE_BUCKET_KEY = 'x-heaviside-sm-bucket' 
-    _STATE_TABLE_KEY = 'x-heaviside-sm-table'
-    _STATE_KEY = 'x-heaviside-sm-state'
+    def __init__(self,
+                 execution_id,
+                 execution,
+                 definition_store,
+                 execution_store,
+                 logger_factory,
+                 task_dispatcher):
+        self.execution_id = execution_id
+        self.execution = execution
+        self.definition = execution.get_definition()
+        
+        self.executor_id = uuid.uuid4().hex
+        print 'created executor {}'.format(self.executor_id[-4:])
+        
+        self.execution = execution
+        
+        self.definition_store=definition_store
+        self.execution_store=execution_store
+        self.logger=logger_factory.logger_factory(self.execution_id, self.executor_id)
+        self.task_dispatcher=task_dispatcher
     
-    @classmethod
-    def hydrate(cls, context, boto3_session=None, local=False):
-        """Retrieve the existing execution using the Lambda context.
-        If the definition is in the cache, it won't need to go to S3."""
-        client_context = context.client_context
-        
-        id = client_context[cls._ID_KEY]
-        state_machine_bucket_name = client_context[cls._STATE_MACHINE_BUCKET_KEY]
-        state_table_name = client_context[cls._STATE_TABLE_KEY]
-        definition_hash = client_context[cls._DEFINITION_HASH_KEY]
-        current_state = client_context[cls._STATE_KEY]
-        
-        return cls._hydrate(id, definition_hash, current_state, state_machine_bucket_name, state_table_name, boto3_session)
-        
-    def __init__(self, id, definition, definition_hash, current_state, boto3_session, state_machine_bucket_name, state_table_name):
-        self.id = id
-        self.definition = definition
-        self._definition_hash = definition_hash
-        
-        self.current_state_name = current_state['name']
-        self.current_state_data = current_state['data'] # anything the state needs to keep around
-        self.result = None
-        
-        self.boto3_session = boto3_session
-        self.state_machine_bucket_name = state_machine_bucket_name
-        self.state_table_name = state_table_name
+    CONTEXT_EXECUTION_ID_KEY = 'x-heaviside-sm-eid'
     
-    def _record_state(self):
-        print json.dumps(self._get_state(), indent=2)
-        pass
-    
-    def _get_state(self):
-        return {
-            'name': self.current_state_name,
-            'data': self.current_state_data,
+    def get_context(self):
+        context = {
+            self.CONTEXT_EXECUTION_ID_KEY: self.execution_id,
         }
+        context.update(self.definition_store.get_context())
+        context.update(self.execution.get_context())
+        context.update(self.logger.get_context())
+        return context
+    
+    def log_state(self):
+        state, result = self.execution.get_current_state_and_result()
+        s = []
+        s.append('\nvvv               vvv')
+#         s.append('execution: {}'.format(self.execution_id[-4:]))
+        s.append('executor: {}'.format(self.executor_id[-4:]))
+        
+        if state:
+            s.append('state:' + json.dumps(state.to_json(), indent=2))
+        
+        if result:
+            s.extend(['result:', json.dumps(result.to_json())])
+        
+        s.append('^^^               ^^^\n')
+        print '\n'.join(s)
     
     def dispatch(self, input):
         """Run the state machine up to the next Task state, which will be async invoked."""
-        if self.current_state_name is None:
-            if self.result:
-                return
+        print '[dispatch] {} input: {}'.format(self.executor_id[-4:], input)
+        current_state, result = self.execution.get_current_state_and_result()
+        self.log_state()
+        if current_state is None:
+            if result:
+                print 'has result'
+                return result.to_json()
             else:
-                self.current_state_name = self.definition.start_at
-        while True:
-            state = self.definition.states[self.current_state_name]
-            if isinstance(state, states.SuccessState):
-                self.result = {
-                    "type": "Success",
-                    "name": self.current_state_name,
-                }
-                self.current_state_name = None
-                self._record_state()
+                print 'initializing', self.definition.start_at
+                self.execution.change_state(self.definition.start_at)
+                self.log_state()
+        for i in itertools.count():
+            current_state, result = self.execution.get_current_state_and_result()
+            
+            print 'loop', self.executor_id[-4:], i, current_state.name
+            state_def = self.definition.states[current_state.name]
+            print 'state def', json.dumps(state_def.to_json())
+            if isinstance(state_def, states.SucceedState):
+                print 'succeed'
+                self.execution.set_result(components.Result(components.Result.STATUS_SUCCEEDED))
+                self.log_state()
                 break
-            elif isinstance(state, states.FailState):
-                self.result = {
-                    "type": "Fail",
-                    "name": self.current_state_name,
-                    "Error": state.error,
-                    "Cause": state.cause,
-                }
-                self.current_state_name = None
-                self._record_state()
+            elif isinstance(state_def, states.FailState):
+                print 'fail'
+                self.execution.set_result(components.Result(components.Result.STATUS_FAILED))
+                self.log_state()
                 break
-            elif isinstance(state, states.TaskState):
-                resource = state.resource
-                lambda_svc = self.boto3_session.client('lambda')
-                client_context = {
-                    self._ID_KEY: self.id,
-                    self._STATE_MACHINE_BUCKET_KEY: self.state_machine_bucket_name,
-                    self._STATE_TABLE_KEY: self.state_table_name,
-                    self._STATE_KEY: self._get_state(),
-                    self._DEFINITION_HASH_KEY: self._definition_hash,
-                }
-                kwargs = {
-                    "FunctionName": resource,
-                    "Payload": json.dumps(input),
-                    "InvocationType": "Event",
-                    "ClientContext": base64.b64encode(json.dumps(client_context)),
-                }
-                self._record_state()
-                result = lambda_svc.invoke(**kwargs)
+            elif isinstance(state_def, states.TaskState):
+                print 'task'
+                self.task_dispatcher.dispatch(state_def.resource, input, self.get_context())
                 break
             else:
-                raise TypeError("No matching type for {}".format(state))
+                raise TypeError("No matching type for {}".format(state_def))
     
     def run_task(self, task_function, exception_handler):
         """Process the current task and dispatch.
         Assumes the current state is a Task state."""
-        state = self.definition.states[self.current_state_name]
+        print '[run task] {}'.format(self.executor_id[-4:])
+        
+        current_state, result = self.execution.get_current_state_and_result()
+        
+        self.log_state()
+        
+        state_def = self.definition.states[current_state.name]
+        print 'state def', state_def.to_json()
         try:
-            result = task_function()
+            output = task_function()
         except Exception as e:
             exception = exception_handler(e)
-            for catcher in state.catch or []:
+            for catcher in state_def.catch or []:
                 if catcher.matches(exception):
-                    self.current_state_name = catcher.next
-                    result = {}
+                    self.execution.change_state(catcher.next)
+                    output = {}
                     break
             else:
-                self.result = {
-                    "type": "Fail",
-                    "name": self.current_state_name,
-                    "Error": "States.TaskFailed",
-                    "Cause": "No matching catcher",
-                }
-                self.current_state_name = None
-                self._record_state()
+#                 self.result = {
+#                     "type": "Fail",
+#                     "name": current_state.name,
+#                     "Error": "States.TaskFailed",
+#                     "Cause": "No matching catcher",
+#                 }
+                self.execution.set_result(components.Result(components.Result.STATUS_FAILED))
+                self.log_state()
                 return
         else:
-            self.current_state_name = state.next
+            if state_def.is_end():
+                print 'task is end state'
+                self.execution.set_result(components.Result(components.Result.STATUS_SUCCEEDED, output))
+            else:
+                self.execution.change_state(state_def.next)
         self.dispatch(result)
         return result

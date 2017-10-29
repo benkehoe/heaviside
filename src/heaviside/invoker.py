@@ -19,23 +19,24 @@ import os
 
 import boto3
 
-from . import executor
+from . import executor, aws
 
 def handler(event, context):
     """Create the state machine from the definition and dispatch. Return the id."""
-    state_machine_bucket_name = os.environ["StateMachineBucket"]
-    state_table_name = os.environ["StateTable"]
     
     definition = event["StateMachine"]
     if isinstance(definition, basestring):
         definition = json.loads(definition)
+        
+    definition_bucket_name = os.environ["StateMachineBucket"]
+    state_table_name = os.environ["StateTable"]
     
-    state_machine = executor.StateMachine.create(definition, state_machine_bucket_name, state_table_name)
+    components = aws.create_and_configure_components(definition_bucket_name)
+    
+    ex = executor.Executor.create(definition, **components)
 
-    state_machine.dispatch(event["Input"])
+    ex.dispatch(event["Input"])
     
     return {
-        "id": state_machine.id,
+        "id": ex.id,
     }
-    
-    raise NotImplementedError
