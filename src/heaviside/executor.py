@@ -47,6 +47,8 @@ class Executor(object):
         
         execution_id = context[cls.CONTEXT_EXECUTION_ID_KEY]
         
+        definition_store.hydrate(context)
+        
         execution = execution_store.execution_factory(execution_id, definition_store)
         execution.hydrate(context)
         

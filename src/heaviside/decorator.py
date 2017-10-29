@@ -27,6 +27,8 @@ def handler(handler_function):
         
         heaviside_context = context.client_context.custom
         
+        print heaviside_context
+        
         ex = executor.Executor.hydrate(heaviside_context, **aws.create_components())
         
         task_runner = lambda: handler_function(event, context)
