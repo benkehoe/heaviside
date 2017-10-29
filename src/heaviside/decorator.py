@@ -16,10 +16,18 @@ def handler(handler_function):
         #proceed as normal
     """
     def wrapper(event, context):
-        if not executor.is_heaviside_execution(event, context):
+        if not (context.client_context
+                and
+                hasattr(context.client_context, 'custom')
+                and
+                isinstance(context.client_context.custom, dict)
+                and
+                executor.is_heaviside_execution(context.client_context.custom)):
             return handler_function(event, context)
         
-        ex = executor.Executor.hydrate(context, **aws.create_components())
+        heaviside_context = context.client_context.custom
+        
+        ex = executor.Executor.hydrate(heaviside_context, **aws.create_components())
         
         task_runner = lambda: handler_function(event, context)
         exception_handler = lambda e: 'States.TaskFailed'

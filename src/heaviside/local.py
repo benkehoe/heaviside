@@ -11,7 +11,7 @@ import time
 
 from . import components
 
-def init_components(executor_class, central_execution_store=False):
+def create_components(executor_class, central_execution_store=False):
     definition_store = LocalDefinitionStore()
     
     if central_execution_store:

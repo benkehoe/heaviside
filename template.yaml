@@ -1,21 +1,21 @@
 AWSTemplateFormatVersion : '2010-09-09'
-Transform: AWS::Serverless-2016-10-31
+#Transform: AWS::Serverless-2016-10-31
 
 Resources:
-  Invoker:
-    Type: AWS::Serverless::Function
-    Properties:
-      CodeUri: ./src
-      Environment:
-        StateMachineBucket: !Ref StateMachineBucket 
-        StateTable: !GetAtt [StateTable, Arn]
-      Handler: invoker.handler
-      MemorySize: 128
-      Runtime: "Python2.7"
-      Timeout: 300
-      Policies:
-      - AmazonS3FullAccess
-      - AmazonDynamoDBReadOnlyAccess
+#  Invoker:
+#    Type: AWS::Serverless::Function
+#    Properties:
+#      CodeUri: ./src
+#      Environment:
+#        StateMachineBucket: !Ref StateMachineBucket 
+#        StateTable: !GetAtt [StateTable, Arn]
+#      Handler: invoker.handler
+#      MemorySize: 128
+#      Runtime: "Python2.7"
+#      Timeout: 300
+#      Policies:
+#      - AmazonS3FullAccess
+#      - AmazonDynamoDBReadOnlyAccess
 
   StateMachineBucket:  
     Type: "AWS::S3::Bucket"
@@ -40,10 +40,10 @@ Resources:
       StreamSpecification:
         StreamViewSpecification: NEW_AND_OLD_IMAGES
   
-  StateRole:
-    Type: AWS::IAM::Role
-    Properties:
-      Policies:
-      - AmazonS3FullAccess
-      - AmazonDynamoDBReadOnlyAccess
+#  StateRole:
+#    Type: AWS::IAM::Role
+#    Properties:
+#      Policies:
+#      - AmazonS3FullAccess
+#      - AmazonDynamoDBReadOnlyAccess
   

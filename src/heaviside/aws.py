@@ -17,7 +17,7 @@ def create_components(boto3_session=None):
     
     definition_store = S3DefinitionStore(boto3_session)
     
-    execution_store = ClientContextAndDynamoDBExecutionStore(boto3_session)
+    execution_store = ClientContextAndDynamoDBExecutionStore()
     
     logger_factory = local.LocalLoggerFactory()
     
@@ -33,8 +33,9 @@ def create_components(boto3_session=None):
     }
 
 def create_and_configure_components(definition_bucket_name, boto3_session=None):
-    comps = init_components(boto3_session)
-    components["definition_store"].bucket = definition_bucket_name
+    comps = create_components(boto3_session)
+    comps["definition_store"]._configure_bucket(definition_bucket_name)
+    return comps
 
 class S3DefinitionStore(components.DefinitionStore):
     _DEFINITION_CACHE = {}
@@ -68,10 +69,14 @@ class S3DefinitionStore(components.DefinitionStore):
         }
     
     def hydrate(self, context):
-        self.bucket_name = context[self.CONTEXT_DEFINITION_BUCKET_KEY]
+        self._configure_bucket(context[self.CONTEXT_DEFINITION_BUCKET_KEY])
+    
+    def _configure_bucket(self, bucket_name):
+        self.bucket_name = bucket_name
         self.bucket = self.session.resource('s3').Bucket(self.bucket_name)
     
     def put_anonymous(self, definition):
+        print '[put anon]'
         definition_id = definition.get_hash()
         key = self.definition_key(definition_id)
         
@@ -79,15 +84,24 @@ class S3DefinitionStore(components.DefinitionStore):
             Body=json.dumps(definition.to_json()),
             Metadata={self.CONTEXT_DEFINITION_ID_KEY: definition_id})
         
+        print key, json.dumps(response)
+        
         self._cache_definition(definition_id, definition)
+        
+        print self._DEFINITION_CACHE
+        
+        return definition_id
     
     def hydrate_definition(self, definition_id):
+        print '[hydrate def] {}'.format(definition_id)
         definition = self._check_definition_cache(definition_id)
         if not definition:
             key = self.definition_key(definition_id)
             response = self.bucket.Object(key).get()
             definition = states.StateMachine.from_json(json.load(response['Body']))
             self._cache_definition(definition_id, definition)
+        else:
+            print 'cached'
         return definition
 
 class ClientContextAndDynamoDBExecutionStore(components.ExecutionStore):
@@ -191,15 +205,16 @@ class CloudWatchLoggerFactory(object):
 class LambdaTaskDispatcher(components.TaskDispatcher):
     def __init__(self, boto3_session=None):
         self.session = boto3_session or boto3.Session()
-        self.lambda_svc = self.boto3_session.client('lambda')
+        self.lambda_svc = self.session.client('lambda')
     
     def dispatch(self, resource, input, context):
         kwargs = {
             "FunctionName": resource,
-            "Payload": json.dumps(input),
-            "InvocationType": "Event",
-            "ClientContext": base64.b64encode(json.dumps(context)),
+            "Payload": json.dumps({'baz': 'bar'}),
+            "InvocationType": "RequestResponse",
+            "ClientContext": base64.b64encode(json.dumps({"custom": context})),
         }
-        kwargs["InvocationType"] = "DryRun"
+        #kwargs["InvocationType"] = "DryRun"
         result = self.lambda_svc.invoke(**kwargs)
+        print result['StatusCode'], result
         
